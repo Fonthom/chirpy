@@ -25,6 +25,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -63,10 +64,11 @@ func cleanChirp(body string) string {
 }
 
 type userResponse struct {
-	ID        string    `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type chirpResponse struct {
@@ -107,10 +109,16 @@ func main() {
 		log.Fatalf("error opening database: %v", err)
 	}
 
+	polkaKey := os.Getenv("POLKA_KEY")
+	if polkaKey == "" {
+		log.Fatal("POLKA_KEY environment variable is not set")
+	}
+
 	apiCfg := &apiConfig{
 		db:        database.New(db),
 		platform:  os.Getenv("PLATFORM"),
 		jwtSecret: jwtSecret,
+		polkaKey:  polkaKey,
 	}
 
 	mux := http.NewServeMux()
@@ -160,10 +168,11 @@ func main() {
 			}
 
 			writeJSON(w, http.StatusCreated, userResponse{
-				ID:        user.ID.String(),
-				CreatedAt: user.CreatedAt,
-				UpdatedAt: user.UpdatedAt,
-				Email:     user.Email,
+				ID:          user.ID.String(),
+				CreatedAt:   user.CreatedAt,
+				UpdatedAt:   user.UpdatedAt,
+				Email:       user.Email,
+				IsChirpyRed: user.IsChirpyRed,
 			})
 
 		case http.MethodPut:
@@ -206,10 +215,11 @@ func main() {
 			}
 
 			writeJSON(w, http.StatusOK, userResponse{
-				ID:        user.ID.String(),
-				CreatedAt: user.CreatedAt,
-				UpdatedAt: user.UpdatedAt,
-				Email:     user.Email,
+				ID:          user.ID.String(),
+				CreatedAt:   user.CreatedAt,
+				UpdatedAt:   user.UpdatedAt,
+				Email:       user.Email,
+				IsChirpyRed: user.IsChirpyRed,
 			})
 
 		default:
@@ -281,10 +291,11 @@ func main() {
 
 		writeJSON(w, http.StatusOK, loginResponse{
 			userResponse: userResponse{
-				ID:        user.ID.String(),
-				CreatedAt: user.CreatedAt,
-				UpdatedAt: user.UpdatedAt,
-				Email:     user.Email,
+				ID:          user.ID.String(),
+				CreatedAt:   user.CreatedAt,
+				UpdatedAt:   user.UpdatedAt,
+				Email:       user.Email,
+				IsChirpyRed: user.IsChirpyRed,
 			},
 			Token:        accessToken,
 			RefreshToken: rawRefresh,
@@ -487,6 +498,58 @@ func main() {
 			w.Header().Set("Allow", "GET, DELETE")
 			writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
 		}
+	})
+
+	// POST /api/polka/webhooks
+	mux.HandleFunc("/api/polka/webhooks", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+			return
+		}
+
+		// Verify Polka API key
+		apiKey, err := auth.GetAPIKey(r.Header)
+		if err != nil || apiKey != apiCfg.polkaKey {
+			writeError(w, http.StatusUnauthorized, "Invalid or missing API key")
+			return
+		}
+
+		var req struct {
+			Event string `json:"event"`
+			Data  struct {
+				UserID string `json:"user_id"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+
+		// Ignore all events except user.upgraded
+		if req.Event != "user.upgraded" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		userID, err := uuid.Parse(req.Data.UserID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid user_id")
+			return
+		}
+
+		_, err = apiCfg.db.UpgradeUserToChirpyRed(r.Context(), userID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				writeError(w, http.StatusNotFound, "User not found")
+				return
+			}
+			log.Printf("UpgradeUserToChirpyRed error: %v", err)
+			writeError(w, http.StatusInternalServerError, "Could not upgrade user")
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// GET /admin/metrics

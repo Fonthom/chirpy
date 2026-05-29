@@ -7,7 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
- 
+	"fmt"
+	 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/alexedwards/argon2id"
@@ -89,6 +90,24 @@ func GetBearerToken(headers http.Header) (string, error) {
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return "", errors.New("malformed Authorization header")
+	}
+	return strings.TrimSpace(parts[1]), nil
+}
+
+// GetAPIKey extracts the key from an "Authorization: ApiKey <key>" header.
+func GetAPIKey(headers http.Header) (string, error) {
+	return extractAuthHeader(headers, "ApiKey")
+}
+ 
+// extractAuthHeader is the shared helper for both Bearer and ApiKey schemes.
+func extractAuthHeader(headers http.Header, scheme string) (string, error) {
+	authHeader := headers.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("missing Authorization header")
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], scheme) {
+		return "", fmt.Errorf("malformed Authorization header, expected %s scheme", scheme)
 	}
 	return strings.TrimSpace(parts[1]), nil
 }
