@@ -130,44 +130,92 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 
-	// POST /api/users
+	// POST /api/users  — create user
+	// PUT  /api/users  — update authenticated user's email and password
 	mux.HandleFunc("/api/users", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
+		switch r.Method {
+		case http.MethodPost:
+			var req struct {
+				Email    string `json:"email"`
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.Password == "" {
+				writeError(w, http.StatusBadRequest, "Invalid request body")
+				return
+			}
+
+			hashedPassword, err := auth.HashPassword(req.Password)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Could not hash password")
+				return
+			}
+
+			user, err := apiCfg.db.CreateUser(r.Context(), database.CreateUserParams{
+				Email:          req.Email,
+				HashedPassword: hashedPassword,
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Could not create user")
+				return
+			}
+
+			writeJSON(w, http.StatusCreated, userResponse{
+				ID:        user.ID.String(),
+				CreatedAt: user.CreatedAt,
+				UpdatedAt: user.UpdatedAt,
+				Email:     user.Email,
+			})
+
+		case http.MethodPut:
+			// Require a valid access token
+			token, err := auth.GetBearerToken(r.Header)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "Missing or malformed authorization header")
+				return
+			}
+			userID, err := auth.ValidateJWT(token, apiCfg.jwtSecret)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "Invalid token")
+				return
+			}
+
+			var req struct {
+				Email    string `json:"email"`
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.Password == "" {
+				writeError(w, http.StatusBadRequest, "Invalid request body")
+				return
+			}
+
+			hashedPassword, err := auth.HashPassword(req.Password)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "Could not hash password")
+				return
+			}
+
+			user, err := apiCfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+				ID:             userID,
+				Email:          req.Email,
+				HashedPassword: hashedPassword,
+			})
+			if err != nil {
+				log.Printf("UpdateUser error: %v", err)
+				writeError(w, http.StatusInternalServerError, "Could not update user")
+				return
+			}
+
+			writeJSON(w, http.StatusOK, userResponse{
+				ID:        user.ID.String(),
+				CreatedAt: user.CreatedAt,
+				UpdatedAt: user.UpdatedAt,
+				Email:     user.Email,
+			})
+
+		default:
+			w.Header().Set("Allow", "POST, PUT")
 			writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
-			return
 		}
-
-		var req struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" || req.Password == "" {
-			writeError(w, http.StatusBadRequest, "Invalid request body")
-			return
-		}
-
-		hashedPassword, err := auth.HashPassword(req.Password)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not hash password")
-			return
-		}
-
-		user, err := apiCfg.db.CreateUser(r.Context(), database.CreateUserParams{
-			Email:          req.Email,
-			HashedPassword: hashedPassword,
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Could not create user")
-			return
-		}
-
-		writeJSON(w, http.StatusCreated, userResponse{
-			ID:        user.ID.String(),
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
-		})
 	})
 
 	// POST /api/login
@@ -371,36 +419,74 @@ func main() {
 	})
 
 	// GET /api/chirps/{chirpID}
+	// DELETE /api/chirps/{chirpID}
 	mux.HandleFunc("/api/chirps/{chirpID}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
-			return
-		}
-
 		chirpID, err := uuid.Parse(r.PathValue("chirpID"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "Invalid chirp ID")
 			return
 		}
 
-		chirp, err := apiCfg.db.GetChirpByID(r.Context(), chirpID)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				writeError(w, http.StatusNotFound, "Chirp not found")
+		switch r.Method {
+		case http.MethodGet:
+			chirp, err := apiCfg.db.GetChirpByID(r.Context(), chirpID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					writeError(w, http.StatusNotFound, "Chirp not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "Could not fetch chirp")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "Could not fetch chirp")
-			return
-		}
+			writeJSON(w, http.StatusOK, chirpResponse{
+				ID:        chirp.ID.String(),
+				CreatedAt: chirp.CreatedAt,
+				UpdatedAt: chirp.UpdatedAt,
+				Body:      chirp.Body,
+				UserID:    chirp.UserID.String(),
+			})
 
-		writeJSON(w, http.StatusOK, chirpResponse{
-			ID:        chirp.ID.String(),
-			CreatedAt: chirp.CreatedAt,
-			UpdatedAt: chirp.UpdatedAt,
-			Body:      chirp.Body,
-			UserID:    chirp.UserID.String(),
-		})
+		case http.MethodDelete:
+			// Authenticate
+			token, err := auth.GetBearerToken(r.Header)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "Missing or malformed authorization header")
+				return
+			}
+			userID, err := auth.ValidateJWT(token, apiCfg.jwtSecret)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, "Invalid token")
+				return
+			}
+
+			// Fetch chirp to verify ownership
+			chirp, err := apiCfg.db.GetChirpByID(r.Context(), chirpID)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					writeError(w, http.StatusNotFound, "Chirp not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "Could not fetch chirp")
+				return
+			}
+
+			// Only the author may delete their chirp
+			if chirp.UserID != userID {
+				writeError(w, http.StatusForbidden, "You are not the author of this chirp")
+				return
+			}
+
+			if err := apiCfg.db.DeleteChirp(r.Context(), chirpID); err != nil {
+				log.Printf("DeleteChirp error: %v", err)
+				writeError(w, http.StatusInternalServerError, "Could not delete chirp")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+
+		default:
+			w.Header().Set("Allow", "GET, DELETE")
+			writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		}
 	})
 
 	// GET /admin/metrics
