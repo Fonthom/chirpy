@@ -405,10 +405,25 @@ func main() {
 			})
 
 		case http.MethodGet:
-			chirps, err := apiCfg.db.GetAllChirps(r.Context())
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "Could not fetch chirps")
-				return
+			var chirps []database.Chirp
+
+			if authorIDStr := r.URL.Query().Get("author_id"); authorIDStr != "" {
+				authorID, err := uuid.Parse(authorIDStr)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, "Invalid author_id")
+					return
+				}
+				chirps, err = apiCfg.db.GetChirpsByAuthor(r.Context(), authorID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "Could not fetch chirps")
+					return
+				}
+			} else {
+				chirps, err = apiCfg.db.GetAllChirps(r.Context())
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "Could not fetch chirps")
+					return
+				}
 			}
 
 			resp := make([]chirpResponse, len(chirps))

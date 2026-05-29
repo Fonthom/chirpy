@@ -5,4 +5,3 @@ ALTER TABLE users
 -- +goose Down
 ALTER TABLE users
     DROP COLUMN is_chirpy_red;
- 
