@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -424,6 +425,20 @@ func main() {
 					writeError(w, http.StatusInternalServerError, "Could not fetch chirps")
 					return
 				}
+			}
+
+			// Sort by created_at
+			sortParam := r.URL.Query().Get("sort")
+			if sortParam == "" || sortParam == "asc" {
+				// Sort ascending (default)
+				sort.Slice(chirps, func(i, j int) bool {
+					return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+				})
+			} else if sortParam == "desc" {
+				// Sort descending
+				sort.Slice(chirps, func(i, j int) bool {
+					return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+				})
 			}
 
 			resp := make([]chirpResponse, len(chirps))
